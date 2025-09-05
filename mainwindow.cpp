@@ -4,6 +4,7 @@
 #include <QStringList>
 #include <QPdfDocument>
 #include <QPdfView>
+#include <QApplication>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -46,5 +47,11 @@ void MainWindow::on_actionOpen_triggered()
     pdfViewer->setPageMode(QPdfView::PageMode::MultiPage);
 
     setCentralWidget(pdfViewer);
+}
+
+
+void MainWindow::on_actionQuit_triggered()
+{
+    QApplication::quit();
 }
 
