@@ -3,5 +3,14 @@
         <file>images/open.png</file>
         <file>images/quit.png</file>
         <file>images/zoom.png</file>
+        <file>images/print.png</file>
+        <file>images/left.png</file>
+        <file>images/right.png</file>
+        <file>images/maximize_2.png</file>
+        <file>images/minimize.png</file>
+        <file>images/about.png</file>
+        <file>images/help.png</file>
+        <file>images/next.png</file>
+        <file>images/previous.png</file>
     </qresource>
 </RCC>

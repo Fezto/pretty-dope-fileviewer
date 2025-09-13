@@ -2,9 +2,12 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include "pdfdocument.h"
+#include "pdfviewer.h"
 
 QT_BEGIN_NAMESPACE
-namespace Ui {
+namespace Ui
+{
 class MainWindow;
 }
 QT_END_NAMESPACE
@@ -14,15 +17,24 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 
 public:
-    MainWindow(QWidget *parent = nullptr);
-    ~MainWindow();
+    explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
+
+protected:
+    void keyPressEvent(QKeyEvent *event) override;
 
 private slots:
-    void on_actionOpen_triggered();
+    void openFile();
+    void quit();
 
-    void on_actionQuit_triggered();
+private:
+    void updateWindowTitle();
+    void setupShortcuts();
 
 private:
     Ui::MainWindow *ui;
+    PDFDocument *m_document;
+    PDFViewer *m_viewer;
 };
+
 #endif // MAINWINDOW_H
