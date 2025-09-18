@@ -9,19 +9,15 @@
 #include <QKeySequence>
 #include <QAction>
 
-// Main application window implementation.
-// Responsible for file loading, zoom handling and navigation.
-// Holds a PDFDocument (data) and a PDFViewer (presentation).
+// Main application window implementation
+// Responsibilities: file loading, zoom handling, navigation wiring
+// Owns: PDFViewer (which owns PDFDocument once loaded)
 
-MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent),
-    ui(new Ui::MainWindow),
-    m_document(new PDFDocument()),
-    m_viewer(new PDFViewer())
+// Construction -----------------------------------------------------
+MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow), m_viewer(new PDFViewer())
 {
     ui->setupUi(this);
 
-    // Set viewer as central widget
     setCentralWidget(m_viewer);
 
     // Wire toolbar actions
@@ -32,15 +28,15 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_viewer, &PDFViewer::currentPageChanged, this, &MainWindow::updateWindowTitle);
     connect(m_viewer, &PDFViewer::zoomChanged, this, &MainWindow::updateWindowTitle);
 
-    setupShortcuts();
 }
 
+// Destruction ------------------------------------------------------
 MainWindow::~MainWindow()
 {
     delete ui;
-    delete m_document;
 }
 
+// File Loading -----------------------------------------------------
 void MainWindow::openFile()
 {
     QFileDialog dialog(this);
@@ -61,19 +57,16 @@ void MainWindow::openFile()
     QString filePath = selected.first();
 
     // Load document
-    qDebug() << "MainWindow: Loading PDF from" << filePath;
-
-    if (!m_document->loadFromFile(filePath))
+    auto doc = std::make_unique<PDFDocument>();
+    if (!doc->loadFromFile(filePath))
     {
-        qDebug() << "MainWindow: Failed to load PDF";
+        // qDebug() << "MainWindow: Failed to load PDF";
         QMessageBox::warning(this, tr("Error"), tr("Failed to open PDF. It may be damaged or password protected?"));
         return;
     }
 
-    qDebug() << "MainWindow: PDF loaded successfully, pages:" << m_document->pageCount();
-
     // Show in viewer
-    if (!m_viewer->setDocument(m_document))
+    if (!m_viewer->setDocument(std::move(doc)))
     {
         qDebug() << "MainWindow: Failed to set document in viewer";
         QMessageBox::warning(this, tr("Error"), tr("Error configuring the PDF viewer."));
@@ -83,85 +76,27 @@ void MainWindow::openFile()
     updateWindowTitle();
 }
 
+// Application Control ----------------------------------------------
 void MainWindow::quit()
 {
     QApplication::quit();
 }
 
+// Window Title Update ----------------------------------------------
 void MainWindow::updateWindowTitle()
 {
-    if (!m_document->isLoaded())
+    if (!m_viewer->hasDocument())
     {
         setWindowTitle("PrettyDopeFileviewer");
         return;
     }
 
     QString title = QString("PrettyDopeFileviewer - %1 (%2/%3) - %4%")
-                        .arg(m_document->title())
+                        .arg(m_viewer->document()->title())
                         .arg(m_viewer->currentPage() + 1)
-                        .arg(m_document->pageCount())
+                        .arg(m_viewer->document()->pageCount())
                         .arg(int(m_viewer->zoom() * 100));
 
     setWindowTitle(title);
 }
 
-void MainWindow::setupShortcuts()
-{
-    // Zoom in (Ctrl + '+' or Ctrl + '=')
-    auto *zoomInShortcut = new QShortcut(QKeySequence::ZoomIn, this);
-    connect(zoomInShortcut, &QShortcut::activated, this, [this]()
-            {
-                if (m_document->isLoaded()) m_viewer->zoomIn(); });
-
-    // Zoom out (Ctrl + '-')
-    auto *zoomOutShortcut = new QShortcut(QKeySequence::ZoomOut, this);
-    connect(zoomOutShortcut, &QShortcut::activated, this, [this]()
-            {
-                if (m_document->isLoaded()) m_viewer->zoomOut(); });
-
-    // Reset zoom (Ctrl+0)
-    auto *zoomResetShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+0")), this);
-    connect(zoomResetShortcut, &QShortcut::activated, this, [this]()
-            {
-                if (m_document->isLoaded()) m_viewer->setZoom(1.0); });
-
-    // Fit width (Ctrl+Shift+W)
-    auto *fitWidthShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+W")), this);
-    connect(fitWidthShortcut, &QShortcut::activated, this, [this]()
-            {
-                if (m_document->isLoaded()) m_viewer->zoomFitWidth(); });
-
-    // Fit page (Ctrl+Shift+P)
-    auto *fitPageShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+P")), this);
-    connect(fitPageShortcut, &QShortcut::activated, this, [this]()
-            {
-                if (m_document->isLoaded()) m_viewer->zoomFitPage(); });
-}
-
-void MainWindow::keyPressEvent(QKeyEvent *event)
-{
-    if (!m_document->isLoaded())
-    {
-        QMainWindow::keyPressEvent(event);
-        return;
-    }
-
-    switch (event->key())
-    {
-    case Qt::Key_Right:
-    case Qt::Key_Down:
-    case Qt::Key_PageDown:
-        m_viewer->goToPage(m_viewer->currentPage() + 1);
-        break;
-
-    case Qt::Key_Left:
-    case Qt::Key_Up:
-    case Qt::Key_PageUp:
-        m_viewer->goToPage(m_viewer->currentPage() - 1);
-        break;
-
-    default:
-        QMainWindow::keyPressEvent(event);
-        break;
-    }
-}

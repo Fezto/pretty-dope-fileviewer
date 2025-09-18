@@ -8,7 +8,7 @@
 QT_BEGIN_NAMESPACE
 namespace Ui
 {
-class MainWindow;
+    class MainWindow;
 }
 QT_END_NAMESPACE
 
@@ -20,8 +20,6 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
-protected:
-    void keyPressEvent(QKeyEvent *event) override;
 
 private slots:
     void openFile();
@@ -29,11 +27,9 @@ private slots:
 
 private:
     void updateWindowTitle();
-    void setupShortcuts();
 
 private:
     Ui::MainWindow *ui;
-    PDFDocument *m_document;
     PDFViewer *m_viewer;
 };
 

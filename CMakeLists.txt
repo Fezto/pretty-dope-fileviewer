@@ -32,6 +32,12 @@ set(PROJECT_SOURCES
     pdfdocument.h
     pdfpage.cpp
     pdfpage.h
+    pagemanager.cpp
+    pagemanager.h
+    navigationcontroller.cpp
+    navigationcontroller.h
+    zoomcontroller.cpp
+    zoomcontroller.h
     pdfviewer.cpp
     pdfviewer.h
     mainwindow.ui

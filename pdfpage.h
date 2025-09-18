@@ -39,12 +39,12 @@ public:
     bool isRendered() const { return m_isRendered; }
     QSize pageSize() const; // Logical (pt) size from Poppler.
 
-
 private:
     QLabel *m_imageLabel;                  // Presentation surface.
     std::unique_ptr<Poppler::Page> m_page; // Underlying page data.
     int m_pageIndex;                       // Index inside document.
     bool m_isRendered;                     // Render cache flag.
+    int m_lastDpi = -1;                    // Last DPI used to render (for zoom re-render)
 
     void setupUI(); // Initialize layout & styling.
 };

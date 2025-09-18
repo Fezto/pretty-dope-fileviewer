@@ -2,24 +2,23 @@
 #define PDFVIEWER_H
 
 #include <QScrollArea>
-#include <QWidget>
-#include <QVBoxLayout>
-#include <QVector>
-#include <QPointer>
 #include <memory>
 #include "pdfdocument.h"
-#include "pdfpage.h"
+#include "pagemanager.h"
+#include "zoomcontroller.h"
+#include "navigationcontroller.h"
 
 /**
  * PDFViewer
  * ---------------------------------------------------------------
- * Orchestrates presentation of multiple PDFPage widgets inside a QScrollArea.
+ * Central orchestrator that coordinates specialized components to
+ * display PDF documents efficiently and with clean separation of concerns.
  *
- * Key features:
- *  - Lazy rendering: only paints visible pages (+ a buffer) to reduce cost.
- *  - Zoom: triggers re-render with DPI scaled by zoom factor.
- *  - Tracks current page based on scroll position.
- *  - Aggregated text extraction.
+ * Component architecture:
+ *  - PageManager: Creates, owns and schedules page widgets (lazy rendering)
+ *  - ZoomController: Maintains zoom state and auto-fit calculations
+ *  - NavigationController: Keyboard/page navigation and current page tracking
+ *  - PDFViewer: Wires everything together and handles UI events (scroll, resize, keys)
  */
 class PDFViewer : public QScrollArea
 {
@@ -28,27 +27,29 @@ class PDFViewer : public QScrollArea
 public:
     explicit PDFViewer(QWidget *parent = nullptr);
 
-    // Document -------------------------------------------------------
-    bool setDocument(PDFDocument *document);
+    // Document ------------------------------------------------------
+    bool setDocument(std::unique_ptr<PDFDocument> document);
     void clearDocument();
+    PDFDocument *document() const { return m_document.get(); }
+    bool hasDocument() const { return m_document && m_document->isLoaded(); }
 
-    // Navigation -----------------------------------------------------
+    // Navigation ----------------------------------------------------
     void goToPage(int pageIndex);
-    int currentPage() const { return m_currentPage; }
+    int currentPage() const;
 
-    // Zoom -----------------------------------------------------------
+    // Zoom ----------------------------------------------------------
     void setZoom(double factor);
-    double zoom() const { return m_zoomFactor; }
-    void zoomIn() { setZoom(m_zoomFactor * 1.1); }
-    void zoomOut() { setZoom(m_zoomFactor / 1.1); }
+    double zoom() const;
+    void zoomIn() { setZoom(zoom() * 1.1); }
+    void zoomOut() { setZoom(zoom() / 1.1); }
     void zoomReset() { setZoom(1.0); }
 
     void zoomFitWidth();
     void zoomFitPage();
-    bool isFitWidth() const { return m_zoomMode == ZoomMode::FitWidth; }
-    bool isFitPage() const { return m_zoomMode == ZoomMode::FitPage; }
+    bool isFitWidth() const;
+    bool isFitPage() const;
 
-    // Utilities ------------------------------------------------------
+    // Utilities -----------------------------------------------------
     QString extractAllText() const;
 
 signals:
@@ -60,38 +61,29 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
 
 private slots:
-    void onScrollValueChanged();
+    void renderVisiblePages();
 
 private:
-    enum class ZoomMode { Free, FitWidth, FitPage };
-
     void setupUI();
-    void buildPageWidgets();
-    void renderVisiblePages();
-    void updateCurrentPage();
+    void setupZoomController();
 
-    void applyZoom(double factor, bool preserveAnchor);
-    void updateAutoFitZoom();
-    double computeFitWidthFactor() const;
-    double computeFitPageFactor() const;
-    void preserveScrollAnchorPreZoom(int &anchorPage, double &relOffset) const;
-    void restoreScrollAnchorPostZoom(int anchorPage, double relOffset);
+    // Geometry helper used by navigation logic
+    QRect getPageGeometry(int pageIndex) const;
 
-    // FUNCIONES TOCADAS POR AYRTON
-    void updateContentGeometry();
+    void renderPageAt(int i, int dpi);
+    void moveScrollBarTo(int i);
 
-    // PROPERTIES
+    // Helpers passed to ZoomController for auto-fit calculations
+    ViewportInfo getViewportInfo() const;
+    PageInfo getPageInfo() const;
 
-    QWidget *m_contentWidget{nullptr};
-    QVBoxLayout *m_contentLayout{nullptr};
-
+    // Core collaborating components (owned or aggregated)
     std::unique_ptr<PDFDocument> m_document;
-    QVector<QPointer<PDFPage>> m_pageWidgets;
+    PageManager *m_pageManager;
+    ZoomController *m_zoomController;
+    NavigationController *m_navigationController;
 
-    int m_currentPage{0};
-    double m_zoomFactor{1.0};
-    ZoomMode m_zoomMode{ZoomMode::Free};
-
+    // Config constants
     static constexpr int DEFAULT_DPI = 200;
     static constexpr int PRERENDER_PAGES = 2;
     static constexpr double MIN_ZOOM = 0.5;

@@ -10,6 +10,7 @@
 #include <QVBoxLayout>
 #include <QDebug>
 
+// Construction -----------------------------------------------------
 PDFPage::PDFPage(QWidget *parent)
     : QWidget(parent), m_imageLabel(nullptr), m_page(nullptr), m_pageIndex(-1), m_isRendered(false)
 {
@@ -18,6 +19,7 @@ PDFPage::PDFPage(QWidget *parent)
     setupUI();
 }
 
+// UI Setup --------------------------------------------------------
 void PDFPage::setupUI()
 {
     QVBoxLayout *layout = new QVBoxLayout(this);
@@ -42,16 +44,19 @@ void PDFPage::setupUI()
     layout->addWidget(m_imageLabel);
 }
 
+// Page Assignment --------------------------------------------------
 void PDFPage::setPage(std::unique_ptr<Poppler::Page> page, int pageIndex)
 {
     m_page = std::move(page);
     m_pageIndex = pageIndex;
     m_isRendered = false;
+    m_lastDpi = -1;
 
-    // Show temporary loading text
-    m_imageLabel->setText(QString("Cargando página %1...").arg(pageIndex + 1));
+    // Temporary loading placeholder (lazy render happens later)
+    m_imageLabel->setText(QString("Loading page %1...").arg(pageIndex + 1));
 }
 
+// Rendering --------------------------------------------------------
 void PDFPage::render(int dpi)
 {
     if (!m_page)
@@ -60,9 +65,10 @@ void PDFPage::render(int dpi)
         return;
     }
 
-    if (m_isRendered)
+    // Re-render if DPI changed or if never rendered
+    if (m_isRendered && dpi == m_lastDpi)
     {
-        qDebug() << "PDFPage::render - Page" << m_pageIndex << "already rendered, skipping";
+        qDebug() << "PDFPage::render - Page" << m_pageIndex << "already rendered at same DPI, skipping";
         return;
     }
 
@@ -109,8 +115,10 @@ void PDFPage::render(int dpi)
     }
 
     m_isRendered = true;
+    m_lastDpi = dpi;
 }
 
+// Page Logical Size Query -----------------------------------------
 QSize PDFPage::pageSize() const
 {
     if (!m_page)
@@ -127,5 +135,3 @@ QSize PDFPage::pageSize() const
     // We lose precision... but we gain compatibility with Qt's geometry system instead
     return QSize(static_cast<int>(sizef.width()), static_cast<int>(sizef.height()));
 }
-
-

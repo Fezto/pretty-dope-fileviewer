@@ -1,476 +1,318 @@
 /**
- * PDFViewer implementation
+ * PDFViewer implementation – Orchestrator pattern
  * ---------------------------------------------------------------
- * Holds logic for:
- * - Dynamic construction of page widgets.
- * - Lazy rendering based on scroll position.
- * - Zoom with smart re-render.
- * - Current page synchronization.
+ * Coordinates specialized components:
+ * - PageManager: page widget lifecycle & lazy rendering
+ * - ZoomController: zoom state + auto-fit logic
+ * - NavigationController: keyboard navigation & current page tracking
  */
 
 #include "pdfviewer.h"
+#include <QKeyEvent>
 #include <QScrollBar>
-#include <QDebug>
 #include <QResizeEvent>
-#include <cmath>
+#include <QShortcut>
+#include <QKeySequence>
 
-PDFViewer::PDFViewer(QWidget *parent)
-    : QScrollArea(parent),
-    m_contentWidget(nullptr),
-    m_contentLayout(nullptr),
-    m_document(nullptr),
-    m_pageWidgets(),
-    m_currentPage(0),
-    m_zoomFactor(1.0),
-    m_zoomMode(ZoomMode::Free)
+PDFViewer::PDFViewer(QWidget *parent) : QScrollArea(parent), m_pageManager(nullptr), m_zoomController(nullptr), m_navigationController(nullptr)
 {
     setupUI();
 }
 
 void PDFViewer::setupUI()
 {
+    // Basic QScrollArea configuration
     setBackgroundRole(QPalette::Dark);
     setFocusPolicy(Qt::StrongFocus);
-    setWidgetResizable(false);
-    setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
 
-    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, &PDFViewer::onScrollValueChanged);
+    // Create collaborating components
+    m_pageManager = new PageManager();
+    m_zoomController = new ZoomController();
+    m_navigationController = new NavigationController(this);
+
+    // Wire zoom + navigation related signals
+    setupZoomController();
+
+    // Provide runtime context to NavigationController
+    m_navigationController->setContext(m_pageManager, verticalScrollBar(), viewport());
+
+    // Connect navigation action signals
+    connect(m_navigationController, &NavigationController::requestScrollTo, this, &PDFViewer::moveScrollBarTo);
+    connect(m_navigationController, &NavigationController::requestRenderPage, this, &PDFViewer::renderPageAt);
+
+    // React to vertical scroll changes
+    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, &PDFViewer::renderVisiblePages);
+
+    // Propagate navigation events outward
+    connect(m_navigationController, &NavigationController::currentPageChanged, this, &PDFViewer::currentPageChanged);
 }
 
-bool PDFViewer::setDocument(PDFDocument *document)
+bool PDFViewer::setDocument(std::unique_ptr<PDFDocument> document)
 {
     if (!document || !document->isLoaded())
+    {
         return false;
+    }
 
     clearDocument();
+    m_document = std::move(document);
 
-    // Take ownership of the passed raw pointer.
-    m_document.reset(document);
+    // Build page widgets via PageManager
+    m_pageManager->buildPages(m_document.get());
+    if (m_pageManager->contentWidget())
+    {
+        setWidget(m_pageManager->contentWidget());
+    }
 
-    buildPageWidgets();
-    m_currentPage = 0;
-    emit currentPageChanged(m_currentPage);
+    // Pre-render first N pages at initial DPI
+    int initialDPI = int(DEFAULT_DPI * m_zoomController->currentZoom());
+    m_pageManager->preRenderInitialPages(5, initialDPI);
+
+    // Pass current DPI to navigation (for targeted prerendering)
+    m_navigationController->setRenderDPI(initialDPI);
+
+    // Jump to the first page
+    m_navigationController->goToFirstPage();
+
     return true;
-}
-
-void PDFViewer::keyPressEvent(QKeyEvent *event)
-{
-    if (!m_document || !m_document->isLoaded()) {
-        QScrollArea::keyPressEvent(event);
-        return;
-    }
-
-    switch (event->key()) {
-    case Qt::Key_Right:
-    case Qt::Key_Down:
-    case Qt::Key_PageDown:
-        goToPage(qMin(m_currentPage + 1, m_pageWidgets.size() - 1));
-        event->accept();
-        break;
-
-    case Qt::Key_Left:
-    case Qt::Key_Up:
-    case Qt::Key_PageUp:
-        goToPage(qMax(m_currentPage - 1, 0));
-        event->accept();
-        break;
-
-    case Qt::Key_Home:
-        goToPage(0);
-        event->accept();
-        break;
-
-    case Qt::Key_End:
-        goToPage(m_pageWidgets.size() - 1);
-        event->accept();
-        break;
-
-    default:
-        QScrollArea::keyPressEvent(event);
-        break;
-    }
 }
 
 void PDFViewer::clearDocument()
 {
-    // If a widget was set into the QScrollArea, take it out and schedule deletion.
-    if (QWidget *w = takeWidget()) {
+    if (QWidget *w = takeWidget())
+    {
         w->deleteLater();
     }
 
-    m_contentWidget = nullptr;
-    m_contentLayout = nullptr;
+    if (m_pageManager)
+    {
+        m_pageManager->clear();
+    }
 
-    // Clear page pointers (QPointer will become null if pages are deleted by parent)
-    m_pageWidgets.clear();
-
-    // Release owned document
     m_document.reset();
-
-    m_currentPage = 0;
 }
 
-void PDFViewer::buildPageWidgets()
-{
-    if (!m_document)
-        return;
-
-    m_contentWidget = new QWidget();
-    m_contentLayout = new QVBoxLayout(m_contentWidget);
-
-    m_contentLayout->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
-    m_contentLayout->setSpacing(20);
-    m_contentLayout->setContentsMargins(50, 50, 50, 50);
-
-    int pageCount = m_document->pageCount();
-    m_pageWidgets.resize(pageCount);
-
-    for (int i = 0; i < pageCount; ++i) {
-        // Parent the page to m_contentWidget so Qt manages its lifetime.
-        PDFPage *pageWidget = new PDFPage(m_contentWidget);
-        auto page = m_document->getPage(i);
-        pageWidget->setPage(std::move(page), i);
-        m_contentLayout->addWidget(pageWidget);
-        m_pageWidgets[i] = pageWidget; // QPointer will hold it
-    }
-
-    m_contentLayout->addStretch(1);
-    setWidget(m_contentWidget); // QScrollArea takes ownership of m_contentWidget
-
-    // Force layouts/geometry updates so size queries are meaningful.
-    m_contentWidget->adjustSize();
-    m_contentLayout->update();
-    m_contentLayout->activate();
-    update();
-
-    updateContentGeometry();
-
-    // Pre-render a few first pages to give a snappier initial UX.
-    int initialPages = qMin(5, pageCount);
-    int initialDPI = int(DEFAULT_DPI * m_zoomFactor);
-    for (int i = 0; i < initialPages; ++i) {
-        PDFPage *p = m_pageWidgets[i].data();
-        if (p)
-            p->render(initialDPI);
-    }
-
-    renderVisiblePages();
-}
-
-void PDFViewer::renderVisiblePages()
-{
-    if (!m_document || m_pageWidgets.isEmpty())
-        return;
-
-    int scrollValue = verticalScrollBar()->value();
-    int viewportHeight = viewport()->height();
-    const int avgPageHeight = 600;
-
-    int firstVisible =
-        qMax(0, (scrollValue / avgPageHeight) - PRERENDER_PAGES);
-    int lastVisible =
-        qMin(m_pageWidgets.size() - 1,
-             ((scrollValue + viewportHeight) / avgPageHeight) + PRERENDER_PAGES);
-
-    int dpi = qMax(DEFAULT_DPI, int(DEFAULT_DPI * m_zoomFactor));
-
-    for (int i = firstVisible; i <= lastVisible; ++i) {
-        PDFPage *p = m_pageWidgets[i].data();
-        if (p)
-            p->render(dpi);
-    }
-
-    updateContentGeometry();
-
-    // Ensure first pages are always rendered when scrolled to top.
-    if (scrollValue == 0) {
-        for (int i = 0; i < qMin(3, m_pageWidgets.size()); ++i) {
-            PDFPage *p = m_pageWidgets[i].data();
-            if (p)
-                p->render(dpi);
-        }
-    }
-}
+// Public Convenience Methods -------------------------------------
 
 void PDFViewer::goToPage(int pageIndex)
 {
-    if (!m_document || pageIndex < 0 || pageIndex >= m_pageWidgets.size())
-        return;
+    if (m_navigationController)
+    {
+        m_navigationController->goToPage(pageIndex);
+    }
+}
 
-    m_currentPage = pageIndex;
-
-    PDFPage *pageToRender = m_pageWidgets[pageIndex].data();
-    if (pageToRender)
-        pageToRender->render(qMax(DEFAULT_DPI, int(DEFAULT_DPI * m_zoomFactor)));
-
-    PDFPage *pageWidget = m_pageWidgets[pageIndex].data();
-    if (!pageWidget)
-        return;
-
-    int y = pageWidget->y();
-    int centerPos = y - (viewport()->height() - pageWidget->height()) / 2;
-    verticalScrollBar()->setValue(qMax(0, centerPos));
-
-    emit currentPageChanged(m_currentPage);
+int PDFViewer::currentPage() const
+{
+    return m_navigationController ? m_navigationController->currentPage() : 0;
 }
 
 void PDFViewer::setZoom(double factor)
 {
-    m_zoomMode = ZoomMode::Free;
-    applyZoom(factor, true);
-}
-
-
-// ----------------------------- Zoom helpers ---------------------------------
-
-void PDFViewer::applyZoom(double factor, bool preserveAnchor)
-{
-    if (!m_document)
-        return;
-
-    if (factor < MIN_ZOOM) factor = MIN_ZOOM;
-    if (factor > MAX_ZOOM) factor = MAX_ZOOM;
-
-    int anchorPage = m_currentPage;
-    double relOffset = 0.0;
-
-    if (preserveAnchor)
-        preserveScrollAnchorPreZoom(anchorPage, relOffset);
-
-    m_zoomFactor = factor;
-
-    // Re-acquire pages from document (in case page resource depends on DPI/zoom)
-    for (int i = 0; i < m_pageWidgets.size(); ++i) {
-        PDFPage *p = m_pageWidgets[i].data();
-        if (!p)
-            continue;
-        auto page = m_document->getPage(p->pageIndex());
-        p->setPage(std::move(page), p->pageIndex());
+    if (m_zoomController)
+    {
+        m_zoomController->setZoom(factor);
     }
-
-    renderVisiblePages();
-
-    if (preserveAnchor)
-        restoreScrollAnchorPostZoom(anchorPage, relOffset);
-
-    emit zoomChanged(m_zoomFactor);
 }
 
-double PDFViewer::computeFitWidthFactor() const
+double PDFViewer::zoom() const
 {
-    if (m_pageWidgets.isEmpty())
-        return m_zoomFactor;
-
-    PDFPage *first = m_pageWidgets.first().data();
-    if (!first || !first->isRendered())
-        return m_zoomFactor;
-
-    int viewportW = viewport()->width();
-    int pageW = first->width();
-    if (pageW <= 0) return m_zoomFactor;
-
-    int margins = 0;
-    if (m_contentLayout) {
-        QMargins mm = m_contentLayout->contentsMargins();
-        margins = mm.left() + mm.right();
-    }
-
-    double available = viewportW - margins;
-    if (available <= 0) return m_zoomFactor;
-
-    return available / double(pageW);
-}
-
-double PDFViewer::computeFitPageFactor() const
-{
-    if (m_pageWidgets.isEmpty())
-        return m_zoomFactor;
-
-    PDFPage *first = m_pageWidgets.first().data();
-    if (!first || !first->isRendered())
-        return m_zoomFactor;
-
-    int viewportW = viewport()->width();
-    int viewportH = viewport()->height();
-    int pageW = first->width();
-    int pageH = first->height();
-    if (pageW <= 0 || pageH <= 0) return m_zoomFactor;
-
-    int marginsW = 0, marginsH = 0;
-    if (m_contentLayout) {
-        QMargins mm = m_contentLayout->contentsMargins();
-        marginsW = mm.left() + mm.right();
-        marginsH = mm.top() + mm.bottom();
-    }
-
-    double availW = viewportW - marginsW;
-    double availH = viewportH - marginsH;
-    if (availW <= 0 || availH <= 0) return m_zoomFactor;
-
-    double factorW = availW / double(pageW);
-    double factorH = availH / double(pageH);
-
-    return std::min(factorW, factorH);
-}
-
-void PDFViewer::preserveScrollAnchorPreZoom(int &anchorPage, double &relOffset) const
-{
-    anchorPage = m_currentPage;
-    if (anchorPage < 0 || anchorPage >= m_pageWidgets.size())
-        return;
-
-    PDFPage *page = m_pageWidgets[anchorPage].data();
-    if (!page)
-        return;
-
-    int scrollY = verticalScrollBar()->value();
-    int top = page->y();
-    int offsetInPage = scrollY - top;
-    if (offsetInPage < 0) offsetInPage = 0;
-
-    relOffset = page->height() > 0 ? double(offsetInPage) / double(page->height()) : 0.0;
-}
-
-void PDFViewer::restoreScrollAnchorPostZoom(int anchorPage, double relOffset)
-{
-    if (anchorPage < 0 || anchorPage >= m_pageWidgets.size())
-        return;
-
-    PDFPage *page = m_pageWidgets[anchorPage].data();
-    if (!page)
-        return;
-
-    int target = page->y() + int(relOffset * page->height());
-    verticalScrollBar()->setValue(target);
-}
-
-void PDFViewer::updateAutoFitZoom()
-{
-    if (m_zoomMode == ZoomMode::FitWidth) {
-        applyZoom(computeFitWidthFactor(), false);
-    } else if (m_zoomMode == ZoomMode::FitPage) {
-        applyZoom(computeFitPageFactor(), false);
-    }
+    return m_zoomController ? m_zoomController->currentZoom() : 1.0;
 }
 
 void PDFViewer::zoomFitWidth()
 {
-    m_zoomMode = ZoomMode::FitWidth;
-    PDFPage *first = m_pageWidgets.isEmpty() ? nullptr : m_pageWidgets.first().data();
-    if (first)
-        first->render(int(DEFAULT_DPI * m_zoomFactor));
-    updateAutoFitZoom();
+    if (m_zoomController)
+    {
+        ViewportInfo viewport = getViewportInfo();
+        PageInfo page = getPageInfo();
+        m_zoomController->fitToWidth(viewport, page);
+    }
 }
 
 void PDFViewer::zoomFitPage()
 {
-    m_zoomMode = ZoomMode::FitPage;
-    PDFPage *first = m_pageWidgets.isEmpty() ? nullptr : m_pageWidgets.first().data();
-    if (first)
-        first->render(int(DEFAULT_DPI * m_zoomFactor));
-    updateAutoFitZoom();
+    if (m_zoomController)
+    {
+        ViewportInfo viewport = getViewportInfo();
+        PageInfo page = getPageInfo();
+        m_zoomController->fitToPage(viewport, page);
+    }
 }
 
-void PDFViewer::onScrollValueChanged()
+bool PDFViewer::isFitWidth() const
 {
-    renderVisiblePages();
-    updateCurrentPage();
+    return m_zoomController && m_zoomController->currentMode() == ZoomMode::FitWidth;
 }
 
-void PDFViewer::updateCurrentPage()
+bool PDFViewer::isFitPage() const
 {
+    return m_zoomController && m_zoomController->currentMode() == ZoomMode::FitPage;
+}
 
+// Event Overrides -------------------------------------------------
 
-    if (m_pageWidgets.isEmpty())
+void PDFViewer::keyPressEvent(QKeyEvent *event)
+{
+    if (!m_document || !m_document->isLoaded())
+    {
+        QScrollArea::keyPressEvent(event);
         return;
+    }
 
-    int scrollValue = verticalScrollBar()->value();
-    int viewportCenter = scrollValue + viewport()->height() / 2;
-    int newCurrentPage = 0;
-
-    for (int i = 0; i < m_pageWidgets.size(); ++i) {
-        PDFPage *pageWidget = m_pageWidgets[i].data();
-        if (!pageWidget)
-            continue;
-        int pageTop = pageWidget->y();
-        int pageBottom = pageTop + pageWidget->height();
-        if (viewportCenter >= pageTop && viewportCenter <= pageBottom) {
-            newCurrentPage = i;
-            break;
+    // Handle zoom shortcuts first (Ctrl + =/+/-/0) including layouts where '+' needs Shift
+    if (event->modifiers() & Qt::ControlModifier)
+    {
+        const int k = event->key();
+        if (k == Qt::Key_Plus || k == Qt::Key_Equal)
+        {
+            if (m_zoomController)
+                m_zoomController->zoomIn();
+            event->accept();
+            return;
+        }
+        if (k == Qt::Key_Minus || k == Qt::Key_Underscore)
+        {
+            if (m_zoomController)
+                m_zoomController->zoomOut();
+            event->accept();
+            return;
+        }
+        if (k == Qt::Key_0)
+        {
+            if (m_zoomController)
+                m_zoomController->resetZoom();
+            event->accept();
+            return;
         }
     }
 
-    if (newCurrentPage != m_currentPage) {
-        m_currentPage = newCurrentPage;
-        emit currentPageChanged(m_currentPage);
+    // Delegate navigation keys to NavigationController
+    if (m_navigationController && m_navigationController->handleKeyPress(event))
+    {
+        return; // Evento manejado
     }
 
+    // Fallback: let base class handle
+    QScrollArea::keyPressEvent(event);
 }
 
 void PDFViewer::resizeEvent(QResizeEvent *event)
 {
     QScrollArea::resizeEvent(event);
-    if (m_zoomMode != ZoomMode::Free) {
-        updateAutoFitZoom();
+
+    // Notify ZoomController so auto-fit modes can recalculate
+    if (m_zoomController)
+    {
+        ViewportInfo viewport = getViewportInfo();
+        PageInfo page = getPageInfo();
+        m_zoomController->onViewportResize(viewport, page);
     }
 }
 
-// FUNCIONES RETOCADAS Y ANALIZADAS POR AYRTON
-
-
-/**
- * @brief Recalculates and updates the geometry of the content widget.
- *
- * This function iterates over all PDF page widgets contained in `m_pageWidgets`,
- * determines the maximum width and the total height required to accommodate
- * all pages, taking into account the layout spacing and margins. It then sets
- * the minimum size of `m_contentWidget` accordingly and triggers a geometry
- * update to ensure the layout system reflects these changes.
- *
- * Side effects:
- *  - Modifies the minimum size of `m_contentWidget`.
- *  - Calls `updateGeometry()` to notify the Qt layout system.
- *
- * Preconditions:
- *  - `m_contentWidget` must be a valid pointer.
- *
- * Postconditions:
- *  - The content widget has a minimum size sufficient to contain all pages
- *    with the configured margins and spacing.
- */
-void PDFViewer::updateContentGeometry()
+void PDFViewer::renderVisiblePages()
 {
-    if (!m_contentWidget)
-        return;
+    // Render visible + buffered pages lazily
+    if (m_pageManager && m_document)
+    {
+        int scrollValue = verticalScrollBar()->value();
+        int viewportHeight = viewport()->height();
+        int dpi = int(DEFAULT_DPI * zoom());
 
-    int maxWidth = 0;
-    int totalHeight = 0;
-
-    // We find de widest PDFPage and we sum the height of each PDFPage
-    for (const QPointer<PDFPage> &p : m_pageWidgets) {
-        PDFPage *pdfPage = p.data();
-        if (!p)
-            continue;
-        maxWidth = qMax(maxWidth, pdfPage->width());
-        totalHeight += pdfPage->height();
+        m_pageManager->renderVisiblePages(scrollValue, viewportHeight,
+                                          PRERENDER_PAGES, dpi);
     }
 
-    if (m_contentLayout) {
+    // Update current page based on scroll position
+    if (m_navigationController)
+    {
+        m_navigationController->updateCurrentPageFromScroll();
+    }
+}
 
-        // Then we add the spacing between the pages into the total height
-        int spacing = m_contentLayout->spacing();
-        totalHeight += spacing * qMax(0, m_pageWidgets.size() - 1);
+// Private Helpers -------------------------------------------------
 
-        // And finally we add the margins into both the totalHeight and maxWidth
-        QMargins margins = m_contentLayout->contentsMargins();
-        maxWidth += margins.left() + margins.right();
-        totalHeight += margins.top() + margins.bottom();
+void PDFViewer::setupZoomController()
+{
+    // Setup ZoomController connections
+    if (m_zoomController)
+    {
+        m_zoomController->setLimits(MIN_ZOOM, MAX_ZOOM);
+
+        // On zoom change: update DPI & rerender visible pages
+        connect(m_zoomController, &ZoomController::zoomChanged, this, [this](double factor, ZoomMode mode)
+                {
+                // Actualizar DPI de navegación
+                if (m_navigationController)
+                {
+                    m_navigationController->setRenderDPI(int(DEFAULT_DPI * factor));
+                }
+
+                // Re-renderizar páginas visibles con nuevo DPI
+                if (m_pageManager && m_document)
+                {
+                    int scrollValue = verticalScrollBar()->value();
+                    int viewportHeight = viewport()->height();
+                    int dpi = int(DEFAULT_DPI * factor);
+                    m_pageManager->renderVisiblePages(scrollValue, viewportHeight, PRERENDER_PAGES, dpi);
+            }
+            
+            emit zoomChanged(factor); });
+    }
+}
+
+// Convenience methods -----------------------
+
+void PDFViewer::moveScrollBarTo(int value){
+    verticalScrollBar()->setValue(value);
+}
+
+
+void PDFViewer::renderPageAt(int i, int dpi){
+    m_pageManager->renderPageAt(i, dpi);
+}
+
+QRect PDFViewer::getPageGeometry(int pageIndex) const
+{
+    if (!m_pageManager)
+        return QRect();
+
+    PDFPage *page = m_pageManager->pageAt(pageIndex);
+    if (!page)
+        return QRect();
+
+    return page->geometry();
+}
+
+ViewportInfo PDFViewer::getViewportInfo() const
+{
+    ViewportInfo info;
+    info.width = viewport()->width();
+    info.height = viewport()->height();
+
+    if (m_pageManager && m_pageManager->contentLayout())
+    {
+        QMargins margins = m_pageManager->contentLayout()->contentsMargins();
+        info.marginsH = margins.left() + margins.right();
+        info.marginsV = margins.top() + margins.bottom();
     }
 
-    if (maxWidth > 0 && totalHeight > 0) {
-        // +1 to avoid zero-dimension oddities
-        m_contentWidget->setMinimumSize(maxWidth, totalHeight + 1);
-        m_contentWidget->updateGeometry();
+    return info;
+}
+
+PageInfo PDFViewer::getPageInfo() const
+{
+    PageInfo info;
+
+    if (m_pageManager && m_pageManager->pageCount() > 0)
+    {
+        PDFPage *firstPage = m_pageManager->pageAt(0);
+        if (firstPage && firstPage->isRendered())
+        {
+            info.width = firstPage->width();
+            info.height = firstPage->height();
+        }
     }
+
+    return info;
 }
